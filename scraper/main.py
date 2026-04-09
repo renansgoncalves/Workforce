@@ -53,8 +53,8 @@ def run_scraper(date_raw=None):
         page.click("#pesquisar_acionamento", force=True)
 
         try:
-            icon_eng = 'img[src*="fictor.png"]'
-            page.wait_for_selector(icon_eng, timeout=60000)
+            icon_eng = 'button:has-text("Exportação Padrão")'
+            page.wait_for_selector(icon_eng, timeout=100000)
             with page.expect_download() as dl:
                 page.click(icon_eng)
             dl.value.save_as(os.path.join(out_dir, "engagements.csv"))
