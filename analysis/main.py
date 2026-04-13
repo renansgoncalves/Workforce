@@ -1,5 +1,4 @@
 import os
-# Adicionado BI_COL_ORDER aqui
 from config import PATHS, EXCEL_COL_ORDER, BI_COL_ORDER 
 from core import WFMProcessor
 from excel_exporter import export_to_excel
@@ -22,11 +21,13 @@ def main():
 
     df = wfm.get_metrics(df_eng, df_brk, df_info)
 
+    df_timeline = wfm.get_timeline(df_eng, df_brk)
+
     df['% ENGANO'] = (df['ENGANO'] / df['NÚMERO DE ACIONAMENTOS'] * 100).fillna(0).astype(int).astype(str) + "%"
     df['% CONVERSÃO'] = (df['STATUS POSITIVOS'] / df['PROPOSTAS'] * 100).fillna(0).astype(int).astype(str) + "%"
     df['EQUIPE'] = df['EQUIPE_INFO']
 
-    export_to_bi(df, PATHS, BI_COL_ORDER)
+    export_to_bi(df, df_timeline, PATHS, BI_COL_ORDER)
 
     time_columns = ['TEMPO EM LIGAÇÃO', 'TEMPO NÃO TABELADO', 'TEMPO DE OCIOSIDADE', 'ALMOÇO', 'BANHEIRO', 'TEMPO TOTAL DE PAUSA']
     for col in time_columns: 

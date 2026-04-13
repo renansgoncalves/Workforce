@@ -69,10 +69,10 @@ def export_to_excel(df: pd.DataFrame, paths: dict, col_order: list):
                 cell_fmt = format_center # Estilo neutro padrão
                 
                 # --- REGRAS DE NEGÓCIO ---
-                # A lógica matemática puxa os dados das colunas _raw (minutos puros) ou calcula porcentagens reais
+                # A lógica matemática puxa os dados das colunas _raw ou calcula porcentagens reais
                 
                 if col_name == 'TEMPO NÃO TABELADO':
-                    if row.get('TEMPO NÃO TABELADO_raw', 0) > 30.0:
+                    if row.get('TEMPO NÃO TABELADO_raw', 0) > 30.0 or row.get('TEMPO NÃO TABELADO_raw', 0) == 0.0:
                         cell_fmt = format_red
                         
                 elif col_name == 'TEMPO DE OCIOSIDADE':

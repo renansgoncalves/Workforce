@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 
-def export_to_bi(df: pd.DataFrame, paths: dict, col_order: list):
+def export_to_bi(df: pd.DataFrame, df_timeline: pd.DataFrame, paths: dict, col_order: list):
     """Gera um arquivo plano ordenado e projetado para o Power BI."""
     df_bi = df.copy()
     
@@ -13,3 +13,8 @@ def export_to_bi(df: pd.DataFrame, paths: dict, col_order: list):
     
     df_bi.to_csv(paths['bi_out'], index=False, encoding='utf-8-sig', sep=';', decimal=',')
     print(f"OK: Base de dados Power BI exportada em: {paths['bi_out']}")
+
+    if not df_timeline.empty:
+        timeline_target = paths['bi_timeline_out']
+        df_timeline.to_csv(timeline_target, index=False, encoding='utf-8-sig', sep=';')
+        print(f"OK: Timeline log exportada em: {timeline_target}")
