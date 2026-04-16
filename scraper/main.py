@@ -29,7 +29,7 @@ def run_scraper(date_raw=None):
     with sync_playwright() as p:
         print(f">> Iniciando scraper...")
         print(f">> Buscando dados para a data: {target_date}...")
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=False)
         page = browser.new_page()
 
         # 1. Login
@@ -54,9 +54,9 @@ def run_scraper(date_raw=None):
 
         try:
             icon_eng = 'button:has-text("Exportação Padrão")'
-            page.wait_for_selector(icon_eng, timeout=150000)
+            page.wait_for_selector(icon_eng, timeout=50000)
             with page.expect_download() as dl:
-                page.click(icon_eng)
+                page.click(icon_eng, timeout=100000)
             dl.value.save_as(os.path.join(out_dir, "engagements.csv"))
             print("OK: engagements.csv")
         except Exception as e:
