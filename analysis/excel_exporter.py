@@ -33,11 +33,13 @@ def export_to_excel(df: pd.DataFrame, paths: dict, col_order: list):
         for i, col in enumerate(df_out.columns):
             worksheet.write(0, i, col, format_header)
             
-            col_width = 14 if col == 'FOTO' else (
-                12 if col == '% CONVERSÃO' else (
-                    7 if col == 'CPC' else (
-                        25 if col == 'OBSERVAÇÕES' else (
-                            20 if col == 'CONSULTOR' else max(min(df_out[col].astype(str).str.len().max() + 2, 16), (len(col) // 2) + 5, 11)
+            col_width = 14 if col == 'FOTO' or col == 'PROPOSTAS' or col == '% CONVERSÃO' else (
+                20 if col == 'CONSULTOR' else (
+                    16 if col == 'ACIONAMENTOS' else (
+                        8 if col == 'CPC' else (
+                            25 if col == 'OBSERVAÇÕES' else (
+                                12 if col == 'NÃO TABULADOS' else max(min(df_out[col].astype(str).str.len().max() + 2, 16), (len(col) // 2) + 5, 11)
+                            )
                         )
                     )
                 )
@@ -48,7 +50,7 @@ def export_to_excel(df: pd.DataFrame, paths: dict, col_order: list):
         for row_idx, (index, row) in enumerate(df_temp.iterrows(), start=1):
             worksheet.set_row(row_idx, 80)
             
-            # Inserção de Imagem do Drive
+            # Inserção de imagem do Drive
             if "ui-avatars" not in str(row.get('FOTO_URL', '')) and row.get('FOTO_URL'):
                 try:
                     img_bytes = fetch_avatar(row['FOTO_URL'])
@@ -66,13 +68,11 @@ def export_to_excel(df: pd.DataFrame, paths: dict, col_order: list):
                 if pd.isna(val):
                     val = ""
                     
-                cell_fmt = format_center # Estilo neutro padrão
+                cell_fmt = format_center
                 
-                # --- REGRAS DE NEGÓCIO ---
-                # A lógica matemática puxa os dados das colunas _raw ou calcula porcentagens reais
-                
+                # --- REGRAS DE NEGÓCIO ---              
                 if col_name == 'TEMPO NÃO TABELADO':
-                    if row.get('TEMPO NÃO TABELADO_raw', 0) > 30.0 or row.get('TEMPO NÃO TABELADO_raw', 0) == 0.0:
+                    if row.get('TEMPO NÃO TABELADO_raw', 0) > 35.0 or row.get('TEMPO NÃO TABELADO_raw', 0) == 0.0:
                         cell_fmt = format_red
                         
                 elif col_name == 'TEMPO DE OCIOSIDADE':
@@ -83,28 +83,52 @@ def export_to_excel(df: pd.DataFrame, paths: dict, col_order: list):
                     if row.get('TEMPO EM LIGAÇÃO_raw', 0) < 60.0:
                         cell_fmt = format_red
                         
-                elif col_name == 'TEMPO TOTAL DE PAUSA':
-                    if row.get('TEMPO TOTAL DE PAUSA_raw', 0) > 150.0:
+                elif col_name == 'TEMPO EM PAUSA':
+                    if row.get('TEMPO EM PAUSA_raw', 0) > 150.0:
                         cell_fmt = format_red
                         
                 elif col_name == 'ALMOÇO':
-                    if row.get('ALMOÇO_raw', 0) > 65.0: # 1 hora e 05 minutos
-                        cell_fmt = format_red
+                    current_consultant = str(row.get('CONSULTOR', '')).strip().upper()
+                    current_team = str(row.get('EQUIPE', '')).strip().upper()
+                    if row.get('ALMOÇO_raw', 0) == 0.0:
+                            cell_fmt = format_red
+                    elif current_consultant == "MARIANA":
+                        if row.get('ALMOÇO_raw', 0) > 80.0:
+                            cell_fmt = format_red
+                    elif current_team == 'MANHÃ':
+                        if row.get('ALMOÇO_raw', 0) > 65.0:
+                            cell_fmt = format_red
+                    else:
+                        if row.get('ALMOÇO_raw', 0) > 20.0:
+                            cell_fmt = format_red
                         
                 elif col_name == 'BANHEIRO':
-                    if row.get('BANHEIRO_raw', 0) > 10.0:
-                        cell_fmt = format_red
+                    current_consultant = str(row.get('CONSULTOR', '')).strip().upper()
+                    if current_consultant == 'MARIANA':
+                        if row.get('BANHEIRO_raw', 0) > 15.0:
+                            cell_fmt = format_red
+                    else:
+                        if row.get('BANHEIRO_raw', 0) > 10.0:
+                            cell_fmt = format_red
                         
-                elif col_name == '% CONVERSÃO':
-                    props = row.get('PROPOSTAS', 0)
-                    pos = row.get('STATUS POSITIVOS', 0)
-                    if props > 0 and (pos / props) > 0.5: # Maior que 50%
+                elif col_name == 'PROPOSTAS POSITIVAS':
+                    if row.get('PROPOSTAS POSITIVAS', 0) >= 10.0:
                         cell_fmt = format_green
-                        
-                elif col_name == '% ENGANO':
-                    ac = row.get('NÚMERO DE ACIONAMENTOS', 0)
-                    eng = row.get('ENGANO', 0)
-                    if ac > 0 and (eng / ac) > 0.5: # Maior que 50%
+
+                elif col_name == 'VENDAS':
+                    if row.get('VENDAS', 0) >= 1.0:
+                        cell_fmt = format_green
+                
+                elif col_name == 'ENGANOS':
+                    if row.get('ENGANOS', 0) >= 50.0:
+                        cell_fmt = format_red
+
+                elif col_name == 'MUDOS':
+                    if row.get('MUDOS', 0) >= 20.0:
+                        cell_fmt = format_red
+
+                elif col_name == 'NÃO TABULADOS':
+                    if row.get('NÃO TABULADOS', 0) >= 25.0:
                         cell_fmt = format_red
                         
                 # 3. Escreve a célula com o valor string visual, mas pintada pela regra matemática

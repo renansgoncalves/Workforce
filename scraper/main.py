@@ -1,4 +1,8 @@
-import os, sys, argparse
+# scraper/main.py
+import os
+import sys
+import argparse
+import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
@@ -17,6 +21,35 @@ def parse_target_date(date_str):
             continue
             
     sys.exit(f"[!] Erro: Formato de data '{date_str}' inválido. Use DD/MM/YYYY.")
+
+def apply_csv_math(file_path, type):
+    """Lê o CSV baixado e insere a coluna de duração calculada."""
+    try:
+        df = pd.read_csv(file_path, sep=';', encoding='utf-8')
+        
+        if type == 'engagements':
+            start = pd.to_datetime(df['Inicio Contato'], format='%H:%M:%S', errors='coerce')
+            end = pd.to_datetime(df['Fim Contato'], format='%H:%M:%S', errors='coerce')
+            duration = (end - start)
+            
+            duration_str = duration.astype(str).str.split(' ').str[-1]
+            
+            df.insert(12, 'Duracao', duration_str)
+            
+        elif type == 'breaks':
+            start = pd.to_datetime(df['INICIO_PAUSA'], format='%H:%M:%S', errors='coerce')
+            end = pd.to_datetime(df['FINAL_PAUSA'], format='%H:%M:%S', errors='coerce')
+            duration = (end - start)
+            
+            duration_str = duration.astype(str).str.split(' ').str[-1]
+            
+            df.insert(6, 'DURACAO', duration_str)
+
+        df.to_csv(file_path, index=False, sep=';', encoding='utf-8-sig')
+        print(f"OK: Matemática aplicada em {os.path.basename(file_path)}")
+        
+    except Exception as e:
+        print(f"[!] Erro ao processar matemática no CSV: {e}")
 
 def run_scraper(date_raw=None):
     target_date = parse_target_date(date_raw)
@@ -46,7 +79,6 @@ def run_scraper(date_raw=None):
         page.fill("#agenda", target_date)
         page.fill("#agendafim", target_date)
         
-        # Ajuste de menu para liberar o seletor
         page.click(".nav.pull-right.top-menu")
         page.wait_for_timeout(500)
         page.select_option("select", label="Geral")
@@ -55,10 +87,14 @@ def run_scraper(date_raw=None):
         try:
             icon_eng = 'button:has-text("Exportação Padrão")'
             page.wait_for_selector(icon_eng, timeout=50000)
+            eng_path = os.path.join(out_dir, "engagements.csv")
             with page.expect_download() as dl:
                 page.click(icon_eng, timeout=100000)
-            dl.value.save_as(os.path.join(out_dir, "engagements.csv"))
-            print("OK: engagements.csv")
+            dl.value.save_as(eng_path)
+            print("OK: engagements.csv salvo.")
+            
+            apply_csv_math(eng_path, 'engagements')
+            
         except Exception as e:
             print(f"[!] Erro ao tentar baixar acionamentos: {e}")
 
@@ -76,10 +112,14 @@ def run_scraper(date_raw=None):
         try:
             icon_brk = 'input[src*="CSV.png"]'
             page.wait_for_selector(icon_brk, timeout=15000)
+            brk_path = os.path.join(out_dir, "breaks.csv")
             with page.expect_download() as dl:
                 page.click(icon_brk)
-            dl.value.save_as(os.path.join(out_dir, "breaks.csv"))
-            print("OK: breaks.csv")
+            dl.value.save_as(brk_path)
+            print("OK: breaks.csv salvo.")
+            
+            apply_csv_math(brk_path, 'breaks')
+            
         except Exception as e:
             print(f"[!] Erro ao tentar baixar pausas: {e}")
 

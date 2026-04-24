@@ -5,15 +5,12 @@ from config import SECONDS_IN_DAY
 
 class DataCleaner:
     
-    
     def __init__(self, current_time: datetime):
         # Recebe o tempo atual instanciado no main para garantir sincronia em todos os módulos
         self.now = current_time
 
-
     def process_info(self, path: str) -> pd.DataFrame:
         """Função para ler e higienizar a base de cadastro (nomes, equipes, horários de turno)."""
-
         try:
             df = pd.read_csv(path, sep=None, engine='python', encoding='utf-8-sig')
             
@@ -37,137 +34,225 @@ class DataCleaner:
             # Se o arquivo não existir ou estiver corrompido, devolve uma tabela vazia sem derrubar o sistema
             return pd.DataFrame()
 
-
     def clean_engagements(self, path: str) -> pd.DataFrame:
         """Lê e higieniza o relatório cru de ligações extraído do sistema."""
-
         df = pd.read_csv(path, sep=';', encoding='utf-8').drop_duplicates()
         
-        # Remove espaços e substitui por underline nos nomes das colunas para facilitar a manipulação
+        # Remove espaços e substitui por underline nos nomes das colunas
         df.columns = df.columns.str.strip().str.replace(' ', '_')
             
-        # Concatena a data e a hora de início em uma única string ("DD/MM/YYYY HH:MM:SS")
+        # Concatena a data e a hora de início em uma única string
         df['Data_Hora_Str'] = df['Data'].astype(str) + " " + df['Inicio_Contato'].astype(str)
         
-        # Divide a string do nome do atendente no '_' (se houver), pega a primeira parte, tira espaços e deixa maiúsculo
+        # Limpeza do nome do atendente
         df['Atendente'] = df['Atendente'].astype(str).str.split('_').str[0].str.strip().str.upper()
         
-        # Remove ligações fantasmas ou de sistema atribuídas a "ABANDONADA" ou "NONE"
+        # Remove ligações fantasmas
         df = df[~df['Atendente'].isin(['ABANDONADA', 'NONE'])]
-        
-        # Garante que a coluna 'Status' exista, preenchendo com vazio caso venha nula do extrator
         df['Status'] = df.get('Status', pd.Series([''] * len(df))).fillna('')
         
-        # Converte as strings temporais puras para objetos do tipo Datetime do Pandas, permitindo cálculos de tempo reais
+        # Converte as strings temporais puras para objetos Datetime
         df['Hora_dt'] = pd.to_datetime(df['Data_Hora_Str'].str.replace('"', ''), dayfirst=True, errors='coerce')
         end_time = pd.to_datetime(df['Fim_Contato'], format='%H:%M:%S', errors='coerce')
         start_time = pd.to_datetime(df['Inicio_Contato'], format='%H:%M:%S', errors='coerce')
         
-        # Calcula a duração da ligação em segundos subtraindo o início do fim
+        # Calcula a duração e corrige viradas de dia em ligações (23:55 a 00:05)
         df['Tempo'] = (end_time - start_time).dt.total_seconds().fillna(0.0)
-        
-        # Se a ligação começou às 23:55 e terminou às 00:05, o cálculo acima daria negativo. Sendo assim,
-        # o np.where detecta valores negativos e soma 24h para corrigir a duração
         df['Tempo'] = np.where(df['Tempo'] < 0.0, df['Tempo'] + SECONDS_IN_DAY, df['Tempo'])
         
-        # Cria a coluna com a hora final exata da ligação, somando a duração ao momento de início
+        # Hora final exata
         df['Hora_fim_dt'] = df['Hora_dt'] + pd.to_timedelta(df['Tempo'], unit='s')
         
-        # Retorna o dataframe removendo eventuais ligações exatamente simultâneas do mesmo atendente (erros do discador)
         return df.drop_duplicates(subset=['Atendente', 'Hora_dt'])
 
-
-    def clean_breaks(self, path: str, df_info: pd.DataFrame, df_eng: pd.DataFrame = None) -> pd.DataFrame:
-        """Fecha pausas esquecidas abertas baseando-se no comportamento do consultor."""
-
-        df = pd.read_csv(path, sep=';', encoding='utf-8').drop_duplicates()
-        
-        # Limpeza padrão do nome do operador
+    def format_breaks_dates(self, path: str) -> pd.DataFrame:
+        """Lê o arquivo de pausas cru, formata nomes e converte as colunas temporais."""
+        try:
+            df = pd.read_csv(path, sep=';', encoding='utf-8').drop_duplicates()
+        except Exception:
+            return pd.DataFrame()
+            
+        if df.empty:
+            return df
+            
         df['OPERADOR'] = df['OPERADOR'].astype(str).str.split('_').str[0].str.strip().str.upper()
-        
-        # Transforma strings em datetimes reais para as colunas de início e fim da pausa
         df['inicio_dt'] = pd.to_datetime(df['Data_INICIO'] + ' ' + df['INICIO_PAUSA'], dayfirst=True, errors='coerce')
         df['fim_dt'] = pd.to_datetime(df['DATA_FIM'] + ' ' + df['FINAL_PAUSA'], dayfirst=True, errors='coerce')
         
-        # Cria um dicionário de busca rápida (hash map) relacionando o consultor ao seu horário de saída previsto no cadastro
-        exit_map = df_info.set_index('CONSULTOR')['SAIDA'].to_dict()
-        
-        # Cria um mapeamento de todas as atividades para encontrar o próximo evento do operador (ligações + pausas)
+        return df
+
+    def apply_shift_rules(self, df_eng: pd.DataFrame, df_brk: pd.DataFrame, df_info: pd.DataFrame) -> tuple:
+        """
+        Aplica a Regra 1 (corrente de 5 mins antes do turno) e a Regra 2 (deslizamento de 10 mins de jornada).
+        Retorna df_eng filtrado, df_brk filtrado e o novo cadastro (df_info_dynamic).
+        """
+        if df_info.empty:
+            return df_eng, df_brk, df_info
+
+        # 1. Cria a linha do tempo mestre apenas com o início das atividades
+        events = []
+        if not df_eng.empty:
+            events.append(df_eng[['Atendente', 'Hora_dt']].rename(columns={'Atendente': 'CONSULTOR', 'Hora_dt': 'DT'}))
+        if not df_brk.empty:
+            events.append(df_brk[['OPERADOR', 'inicio_dt']].rename(columns={'OPERADOR': 'CONSULTOR', 'inicio_dt': 'DT'}))
+            
+        if not events:
+            return df_eng, df_brk, df_info
+
+        df_timeline = pd.concat(events, ignore_index=True).dropna(subset=['DT'])
+        df_timeline['DATE_ONLY'] = df_timeline['DT'].dt.date
+        df_timeline.sort_values(by=['CONSULTOR', 'DT'], inplace=True)
+
+        dynamic_info_list = []
+        valid_cutoffs = {}
+
+        # 2. Avalia consultor por consultor as regras de tempo
+        for _, row in df_info.iterrows():
+            consultant = row['CONSULTOR']
+            
+            if not str(row['ENTRADA']).strip() or not str(row['SAIDA']).strip():
+                dynamic_info_list.append(row)
+                continue
+
+            consultant_events = df_timeline[df_timeline['CONSULTOR'] == consultant]
+            
+            if consultant_events.empty:
+                dynamic_info_list.append(row)
+                continue
+
+            for date_val, group in consultant_events.groupby('DATE_ONLY'):
+                try:
+                    official_entry = pd.to_datetime(f"{date_val} {row['ENTRADA']}")
+                    official_exit = pd.to_datetime(f"{date_val} {row['SAIDA']}")
+                except Exception:
+                    continue
+
+                event_times = group['DT'].sort_values().reset_index(drop=True)
+                
+                # -- Regra 1: Validação de sujeira pré-turno (5 minutos) --
+                pre_shift_events = event_times[event_times < official_entry]
+                cutoff_time = pd.Timestamp.min
+                
+                if not pre_shift_events.empty:
+                    # Avalia do evento mais próximo da entrada até o mais antigo
+                    pre_shift_reversed = pre_shift_events.iloc[::-1].reset_index(drop=True)
+                    current_compare_time = official_entry
+                    last_valid_time = official_entry
+                    
+                    for ev_time in pre_shift_reversed:
+                        gap_seconds = (current_compare_time - ev_time).total_seconds()
+                        if gap_seconds <= 300.0:  # 5 minutos
+                            last_valid_time = ev_time
+                            current_compare_time = ev_time
+                        else:
+                            cutoff_time = last_valid_time
+                            break
+                            
+                    if cutoff_time == pd.Timestamp.min:
+                         cutoff_time = last_valid_time
+                else:
+                    cutoff_time = official_entry
+
+                # Salva o corte temporal desse dia
+                valid_cutoffs[(consultant, date_val)] = cutoff_time
+                
+                # -- Regra 2: Deslizamento de jornada (10 minutos) --
+                valid_events = event_times[event_times >= cutoff_time]
+                
+                dynamic_row = row.copy()
+                dynamic_row['DATA'] = date_val.strftime('%d/%m/%Y')
+                
+                if not valid_events.empty:
+                    first_valid_event = valid_events.iloc[0]
+                    last_valid_event = valid_events.iloc[-1]
+                    delay_seconds = (first_valid_event - official_entry).total_seconds()
+                    
+                    if delay_seconds >= 600.0:  # 10 minutos
+                        shift_duration = official_exit - official_entry
+                        new_exit_target = first_valid_event + shift_duration
+                        
+                        if last_valid_event > official_exit:
+                            final_exit = min(new_exit_target, last_valid_event)
+                            dynamic_row['ENTRADA'] = first_valid_event.strftime('%H:%M:%S')
+                            dynamic_row['SAIDA'] = final_exit.strftime('%H:%M:%S')
+
+                dynamic_info_list.append(dynamic_row)
+
+        df_info_dynamic = pd.DataFrame(dynamic_info_list)
+
+        # 3. Aplica a linha de corte (regra 1) descartando as sujeiras
+        if not df_eng.empty and valid_cutoffs:
+            df_eng['DATE_ONLY'] = df_eng['Hora_dt'].dt.date
+            def is_valid_eng(r):
+                cutoff = valid_cutoffs.get((r['Atendente'], r['DATE_ONLY']), pd.Timestamp.min)
+                return r['Hora_dt'] >= cutoff
+            df_eng = df_eng[df_eng.apply(is_valid_eng, axis=1)].drop(columns=['DATE_ONLY'])
+
+        if not df_brk.empty and valid_cutoffs:
+            df_brk['DATE_ONLY'] = df_brk['inicio_dt'].dt.date
+            def is_valid_brk(r):
+                cutoff = valid_cutoffs.get((r['OPERADOR'], r['DATE_ONLY']), pd.Timestamp.min)
+                return r['inicio_dt'] >= cutoff
+            df_brk = df_brk[df_brk.apply(is_valid_brk, axis=1)].drop(columns=['DATE_ONLY'])
+
+        return df_eng, df_brk, df_info_dynamic
+
+    def close_breaks(self, df_brk: pd.DataFrame, df_info_dynamic: pd.DataFrame, df_eng: pd.DataFrame) -> pd.DataFrame:
+        """Fecha pausas abertas cruzando as atividades com o cadastro dinâmico gerado."""
+        if df_brk.empty:
+            return df_brk
+            
+        if 'DATA' in df_info_dynamic.columns:
+            exit_map = df_info_dynamic.set_index(['CONSULTOR', 'DATA'])['SAIDA'].to_dict()
+        else:
+            exit_map = df_info_dynamic.set_index('CONSULTOR')['SAIDA'].to_dict()
+            
         all_starts = []
-        
-        # Extrai quem atendeu e quando
-        if df_eng is not None and not df_eng.empty:
+        if not df_eng.empty:
             all_starts.append(df_eng[['Atendente', 'Hora_dt']].rename(columns={'Atendente': 'CONSULTOR', 'Hora_dt': 'DT'}))
         
-        # Adiciona também os inícios de todas as pausas
-        all_starts.append(df[['OPERADOR', 'inicio_dt']].rename(columns={'OPERADOR': 'CONSULTOR', 'inicio_dt': 'DT'}))
+        all_starts.append(df_brk[['OPERADOR', 'inicio_dt']].rename(columns={'OPERADOR': 'CONSULTOR', 'inicio_dt': 'DT'}))
         
-        # Funde ligações e pausas em uma única "linha do tempo mestre", removendo nulos e ordenando cronologicamente
         df_activities = pd.concat(all_starts, ignore_index=True).dropna(subset=['DT'])
         df_activities.sort_values(by=['CONSULTOR', 'DT'], inplace=True)
-        
-        # Agrupa essa linha do tempo por consultor, criando um dicionário onde a chave é o consultor e o valor é um array de horários
         starts_dict = df_activities.groupby('CONSULTOR')['DT'].apply(lambda x: x.values).to_dict()
         
-        # Função auxiliar para buscar, dado um instante no tempo, qual foi a próxima coisa que aquele consultor fez
         def get_next_activity(consultor: str, current_dt: pd.Timestamp) -> pd.Timestamp:
             if consultor not in starts_dict or pd.isnull(current_dt):
                 return pd.NaT
             times = starts_dict[consultor]
-            
-            # Filtra o array temporal para manter apenas horários que aconteceram estritamente depois do horário atual
             mask = times > current_dt.to_numpy()
             if mask.any():
-                # Retorna o primeiro horário futuro encontrado
                 return pd.Timestamp(times[mask][0])
             return pd.NaT
         
         def sanitize_break(row):
-            """Função principal de sanitização, aplicada linha a linha (a cada pausa)."""
-
             start_dt = row['inicio_dt']
-            
-            # 1. Pega o fim original do sistema (se existir) e descarta o fim que for antes do começo
             sys_end = row['fim_dt'] if pd.notnull(row['fim_dt']) and row['fim_dt'] >= start_dt else pd.NaT
-            
-            # 2. Busca na linha do tempo mestre o início da próxima atividade (ligação ou outra pausa)
             next_dt = get_next_activity(row['OPERADOR'], start_dt)
             
-            # 3. Cria uma lista vazia para armazenar todos os "finais possíveis" para essa pausa
             possible_ends = []
+            if pd.notnull(sys_end): possible_ends.append(sys_end)
+            if pd.notnull(next_dt): possible_ends.append(next_dt)
+                
+            # Busca o horário de saída dinâmico (baseado na data e no consultor)
+            date_str = start_dt.strftime('%d/%m/%Y')
+            exit_str = exit_map.get((row['OPERADOR'], date_str)) if 'DATA' in df_info_dynamic.columns else exit_map.get(row['OPERADOR'])
             
-            # Se o sistema tem um horário de fim, adiciona na competição
-            if pd.notnull(sys_end):
-                possible_ends.append(sys_end)
-                
-            # Se achamos uma próxima atividade, adiciona na competição
-            if pd.notnull(next_dt):
-                possible_ends.append(next_dt)
-                
-            # 4. Verifica a que horas o consultor deveria deslogar
-            exit_str = str(exit_map.get(row['OPERADOR'], "")).strip()
-            if exit_str and ":" in exit_str:
+            if exit_str and ":" in str(exit_str):
                 try:
-                    # Constrói o datetime combinando a data da pausa com a hora de saída do cadastro
                     exit_dt = pd.to_datetime(f"{start_dt.strftime('%Y-%m-%d')} {exit_str}")
-                    # Só considera válido se a saída for depois do começo da pausa
                     if exit_dt > start_dt:
                         possible_ends.append(exit_dt)
                 except Exception:
                     pass
             
-            # A função min() olha para a lista de candidatos e corta a pausa no horário mais cedo possível,
-            # corrigindo sobreposições (ex: consultor esqueceu a pausa aberta e atendeu ligação)
             if possible_ends:
                 return min(possible_ends)
                     
-            # Para quando não tem próxima atividade, nem registro do sistema, nem fim de expediente cadastrado:
-            # Se a pausa foi hoje, encerra ela no exato instante em que o robô está rodando. Se for de dias passados, anula a pausa
             return self.now if start_dt.date() == self.now.date() else start_dt
 
-        # Aplica a função de sanitização em todas as linhas para sobrescrever a coluna de fim original
-        df['fim_dt'] = df.apply(sanitize_break, axis=1)
+        df_brk['fim_dt'] = df_brk.apply(sanitize_break, axis=1)
+        subset_cols = ['OPERADOR', 'inicio_dt', 'PAUSA'] if 'PAUSA' in df_brk.columns else ['OPERADOR', 'inicio_dt']
         
-        # Remove eventuais linhas duplicadas usando as colunas chave (operador, início e nome da pausa)
-        subset_cols = ['OPERADOR', 'inicio_dt', 'PAUSA'] if 'PAUSA' in df.columns else ['OPERADOR', 'inicio_dt']
-        return df.drop_duplicates(subset=subset_cols)
+        return df_brk.drop_duplicates(subset=subset_cols)
