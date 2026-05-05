@@ -5,7 +5,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 from tkcalendar import Calendar
-from datetime import timedelta  # Importação necessária para a matemática de dias
+from datetime import timedelta
 
 SCRAPER_SCRIPT = "scraper/main.py"
 ANALYSIS_SCRIPT = "analysis/main.py"
@@ -63,7 +63,7 @@ def prompt_for_date(root: tk.Tk) -> str:
         except Exception:
             pass
 
-    # Associa as setinhas do teclado à nossa nova função de movimento
+    # Associa as setinhas do teclado à função de movimento
     top.bind('<Left>', move_date)
     top.bind('<Right>', move_date)
     top.bind('<Up>', move_date)

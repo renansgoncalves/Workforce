@@ -90,7 +90,7 @@ def export_to_excel(df: pd.DataFrame, paths: dict, col_order: list):
                 elif col_name == 'ALMOÇO':
                     current_consultant = str(row.get('CONSULTOR', '')).strip().upper()
                     current_team = str(row.get('EQUIPE', '')).strip().upper()
-                    if row.get('ALMOÇO_raw', 0) == 0.0:
+                    if row.get('ALMOÇO_raw', 0) == 0.0 or row.get('ALMOÇO_raw', 0) < 1:
                             cell_fmt = format_red
                     elif current_consultant == "MARIANA":
                         if row.get('ALMOÇO_raw', 0) > 80.0:

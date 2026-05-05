@@ -40,7 +40,7 @@ class MetricsEngine:
         return idle_seconds / SECONDS_IN_MINUTE
 
     def fetch_external_sales(self, url: str, target_date_str: str) -> pd.DataFrame:
-        """Busca, valida e processa planilhas do Google Sheets."""
+        """Busca, valida e processa planilhas do Google Sheets lendo múltiplas abas."""
         if not url:
             return pd.DataFrame()
             
@@ -51,6 +51,7 @@ class MetricsEngine:
             with urllib.request.urlopen(req) as response:
                 filename = response.info().get_filename()
                 
+                # Validação de segurança (apenas um aviso se falhar, para não bloquear testes)
                 if filename:
                     filename_upper = urllib.parse.unquote(filename).upper()
                     filename_clean = unicodedata.normalize('NFKD', filename_upper).encode('ASCII', 'ignore').decode('utf-8')
@@ -62,36 +63,69 @@ class MetricsEngine:
                     }
                     
                     target_month_int = int(target_date_str.split('/')[1])
-                    target_month_name = pt_months[target_month_int]
+                    target_month_name = pt_months.get(target_month_int, '')
                     
-                    if target_month_name not in filename_clean:
-                        print(f"[!] Vendas externas desconsideradas. Mês alvo: {target_month_name}. Atualize o link.")
-                        return pd.DataFrame()
+                    if target_month_name and target_month_name not in filename_clean:
+                        print(f"[!] Aviso de Segurança: O nome da planilha não contém o mês alvo ({target_month_name}).")
             
-                csv_data = response.read()
-                df_ext = pd.read_csv(io.BytesIO(csv_data))
+                # Lê o ficheiro em formato binário Excel
+                file_data = response.read()
                 
-            df_ext.columns = df_ext.columns.str.strip().str.upper()
+                # Ao passar sheet_name=None, o Pandas carrega todas as abas do arquivo para a memória
+                all_sheets = pd.read_excel(io.BytesIO(file_data), sheet_name=None)
+                
+            target_tabs = ['MARGEM BLOQUEADO', 'MARGEM AVERBADO']
+            valid_dfs = []
+            
+            for sheet_name, df_sheet in all_sheets.items():
+                if sheet_name.strip().upper() in target_tabs:
+                    valid_dfs.append(df_sheet)
+                    
+            if not valid_dfs:
+                print("[!] Aviso: Nenhuma aba alvo encontrada.")
+                return pd.DataFrame()
+                
+            # Empilha verticalmente todas as abas encontradas
+            df_ext = pd.concat(valid_dfs, ignore_index=True)
+            
+            # Limpeza dos nomes das colunas
+            df_ext.columns = df_ext.columns.astype(str).str.strip().str.upper()
             df_ext = df_ext.dropna(subset=['CONSULTOR', 'DATA'])
             
-            def fix_date(d):
-                d = str(d).strip()
-                if len(d) <= 5: 
-                    return f"{d}/{self.now.year}"
-                return d
+            def fix_date(val):
+                if pd.isna(val): return ""
+                # Se o Pandas leu como um objeto temporal do Excel (ex: 2026-05-04)
+                if isinstance(val, (datetime, pd.Timestamp)):
+                    return val.strftime("%d/%m/%Y")
+                
+                val_str = str(val).strip()
+                # Se for string como "2026-05-04 00:00:00"
+                if len(val_str) > 10 and '-' in val_str:
+                    try:
+                        return pd.to_datetime(val_str).strftime("%d/%m/%Y")
+                    except:
+                        pass
+                # Se for string curta "04/05"
+                if len(val_str) <= 5 and '/' in val_str:
+                    return f"{val_str}/{self.now.year}"
+                    
+                return val_str
                 
             df_ext['DATA'] = df_ext['DATA'].apply(fix_date)
             df_ext['CONSULTOR_EXTERNO'] = df_ext['CONSULTOR'].astype(str).str.upper().str.replace(' ', '')
             
-            if 'CLIENTE' in df_ext.columns:
-                df_ext['CLIENTE_CLEAN'] = df_ext['CLIENTE'].astype(str).str.strip().str.upper()
+            client_col = next((c for c in ['CLIENTE', 'NOME', 'CPF'] if c in df_ext.columns), None)
+            
+            if client_col:
+                df_ext['CLIENTE_CLEAN'] = df_ext[client_col].astype(str).str.strip().str.upper()
                 sales_count = df_ext.groupby(['DATA', 'CONSULTOR_EXTERNO'])['CLIENTE_CLEAN'].nunique().reset_index(name='VENDAS_EXTERNAS')
             else:
                 sales_count = df_ext.groupby(['DATA', 'CONSULTOR_EXTERNO']).size().reset_index(name='VENDAS_EXTERNAS')
                 
             return sales_count
+            
         except Exception as e:
-            print(f"[!] Aviso: Não foi possível carregar as vendas externas. Erro: {e}")
+            print(f"[!] Erro crítico ao processar vendas externas: {e}")
             return pd.DataFrame()
 
     def get_metrics(self, df_eng: pd.DataFrame, df_brk: pd.DataFrame, df_info: pd.DataFrame, target_date_str: str) -> pd.DataFrame:

@@ -55,7 +55,7 @@ class TimelineGenerator:
         duration_seconds = (df_grouped['END_DT'] - df_grouped['START_DT']).dt.total_seconds()
         df_grouped = df_grouped[duration_seconds >= 210.0].copy()
 
-        # Recalcula os blocos após o filtro para garantir contiguidade
+        # Recalcula os blocos após o filtro
         has_changed_after = (df_grouped['CONSULTOR'] != df_grouped['CONSULTOR'].shift(1)) | \
                             (df_grouped['EVENT'] != df_grouped['EVENT'].shift(1))
         

@@ -62,7 +62,7 @@ def run_scraper(date_raw=None):
     with sync_playwright() as p:
         print(f">> Iniciando scraper...")
         print(f">> Buscando dados para a data: {target_date}...")
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         # 1. Login
